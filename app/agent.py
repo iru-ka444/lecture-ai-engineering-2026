@@ -5,6 +5,7 @@
     uv run python -m app.agent --trace "LoRAとQLoRAの違いは？"   # ツール呼び出しを表示
     uv run python -m app.agent --mcp --trace "LoRAとは？"        # 第5回: ツールを MCP サーバーから受け取る
     uv run python -m app.agent --mcp --list-tools               # 第5回: モデルに見えるツール一覧（APIキー不要）
+    学習記録の保存を依頼すると、CLI で実行前に承認を確認する
 
 エージェント = モデル + ループ + ツール。
 モデルは tools.py の関数を「ツール」として呼び出し、その結果を見て回答を作る。
@@ -16,7 +17,7 @@ import inspect
 import json
 from pathlib import Path
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults
 from pydantic_ai.exceptions import ModelHTTPError
 from fastmcp import Client
 from pydantic_ai.mcp import MCPToolset, StdioTransport
@@ -38,11 +39,13 @@ INSTRUCTIONS = """\
 """
 
 # モデルは実行時に渡す（テストではAPIを呼ばない TestModel に差し替えるため）
-agent = Agent(instructions=INSTRUCTIONS)
+agent = Agent(instructions=INSTRUCTIONS, output_type=[str, DeferredToolRequests])
 agent.tool_plain(tools.search_glossary)
 agent.tool_plain(tools.get_lecture_summary)
 
 # TODO(第3回 演習): tools.py に make_quiz を作り、ここで登録しよう
+agent.tool_plain(tools.make_quiz)
+agent.tool_plain(tools.save_learning_log, requires_approval=True)
 
 # 第5回: 使う MCP サーバーの設定ファイル。Claude Desktop や Cursor と同じ "mcpServers" 形式
 MCP_CONFIG = Path(__file__).resolve().parent / "mcp_servers.json"
@@ -109,6 +112,20 @@ def print_trace(result) -> None:
     print(f"[usage] {result.usage}")
 
 
+def confirm_deferred_tool_requests(requests: DeferredToolRequests) -> DeferredToolResults:
+    """保留されたツール呼び出しを表示し、利用者の承認結果を組み立てる。"""
+    if requests.calls:
+        raise RuntimeError("外部実行が必要な保留ツールには、この CLI は対応していません。")
+
+    approvals = {}
+    for call in requests.approvals:
+        print(f"\nツール {call.tool_name} が実行承認を求めています。")
+        print(f"引数: {json.dumps(call.args, ensure_ascii=False)}")
+        answer = input("実行を承認しますか？ [y/N]: ").strip().casefold()
+        approvals[call.tool_call_id] = answer in {"y", "yes", "はい"}
+    return requests.build_results(approvals=approvals)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="学習支援エージェントに質問する")
     parser.add_argument("question", nargs="?")
@@ -129,6 +146,13 @@ def main() -> None:
         print("[tools] MCP サーバー（app/mcp_servers.json）")
     try:
         result = target.run_sync(args.question, model=build_model())
+        while isinstance(result.output, DeferredToolRequests):
+            deferred_results = confirm_deferred_tool_requests(result.output)
+            result = target.run_sync(
+                message_history=result.all_messages(),
+                deferred_tool_results=deferred_results,
+                model=build_model(),
+            )
     except ModelHTTPError as e:
         print(api_error_message(e.status_code, str(e.body)[:200]))
         raise SystemExit(1)
