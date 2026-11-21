@@ -5,6 +5,8 @@ TestModel は実際のLLMを呼ばない偽モデルで、登録されたツー�
 「ツールが登録され、呼ばれ、結果がモデルに戻るか」を確かめられる。
 """
 
+import json
+
 import pytest
 from pydantic_ai import DeferredToolRequests
 from pydantic_ai.messages import ToolCallPart, ToolReturnPart
@@ -21,6 +23,7 @@ def _parts(result, kind):
 
 
 def test_base_tools_are_registered_and_called():
+    monkeypatch.setattr("app.retrieval.search", lambda *args, **kwargs: [])
     model = TestModel(call_tools=sorted(BASE_TOOLS))
     with agent.override(model=model):
         result = agent.run_sync("LoRAとは？")
@@ -30,6 +33,8 @@ def test_base_tools_are_registered_and_called():
 
     called = {p.tool_name for p in _parts(result, ToolCallPart)}
     assert BASE_TOOLS <= called
+        # 承認が必要なツール（requires_approval=True）は、実行されずに承認待ちになるので戻り値が無い
+    waiting = len(result.output.approvals) if isinstance(result.output, DeferredToolRequests) else 0
     assert len(_parts(result, ToolReturnPart)) == len(_parts(result, ToolCallPart))
     assert result.output
 
@@ -82,3 +87,14 @@ def test_cli_confirmation_maps_user_answer_to_approval(monkeypatch, answer, expe
     results = confirm_deferred_tool_requests(requests)
 
     assert results.approvals == {call.tool_call_id: expected}
+
+
+def test_material_result_reaches_the_model(monkeypatch):
+    hit = {"page_id": "lec02-main-p052", "lecture": 2, "page": 52, "content": "元の重みは固定"}
+    monkeypatch.setattr("app.retrieval.search", lambda *args, **kwargs: [hit])
+    model = TestModel(call_tools=["search_materials"])
+    with agent.override(model=model):
+        result = agent.run_sync("RAGとは？")
+    returns = _parts(result, ToolReturnPart)
+    assert returns and returns[0].tool_name == "search_materials"
+    assert json.loads(returns[0].content)["results"] == [hit]
