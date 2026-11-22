@@ -13,7 +13,7 @@ from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from pydantic_ai.models.test import TestModel
 
 from app import tools
-from app.agent import agent, confirm_deferred_tool_requests
+from app.agent import agent, confirm_deferred_tool_requests, print_trace
 
 BASE_TOOLS = {"search_glossary", "get_lecture_summary"}
 
@@ -22,7 +22,7 @@ def _parts(result, kind):
     return [p for m in result.all_messages() for p in m.parts if isinstance(p, kind)]
 
 
-def test_base_tools_are_registered_and_called():
+def test_base_tools_are_registered_and_called(monkeypatch):
     monkeypatch.setattr("app.retrieval.search", lambda *args, **kwargs: [])
     model = TestModel(call_tools=sorted(BASE_TOOLS))
     with agent.override(model=model):
@@ -89,12 +89,18 @@ def test_cli_confirmation_maps_user_answer_to_approval(monkeypatch, answer, expe
     assert results.approvals == {call.tool_call_id: expected}
 
 
-def test_material_result_reaches_the_model(monkeypatch):
-    hit = {"page_id": "lec02-main-p052", "lecture": 2, "page": 52, "content": "元の重みは固定"}
+def test_material_result_reaches_the_model(monkeypatch, capsys):
+    hit = {
+        "page_id": "lec02-main-p052", "lecture": 2, "page": 52,
+        "title": "LoRA", "content": "元の重みは固定",
+    }
     monkeypatch.setattr("app.retrieval.search", lambda *args, **kwargs: [hit])
     model = TestModel(call_tools=["search_materials"])
     with agent.override(model=model):
         result = agent.run_sync("RAGとは？")
     returns = _parts(result, ToolReturnPart)
     assert returns and returns[0].tool_name == "search_materials"
-    assert json.loads(returns[0].content)["results"] == [hit]
+    result_data = json.loads(returns[0].content)["results"][0]
+    assert result_data == hit
+    print_trace(result)
+    assert "[usage]" in capsys.readouterr().out

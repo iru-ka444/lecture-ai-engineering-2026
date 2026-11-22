@@ -77,6 +77,7 @@ FULL_CONTEXT_PROMPT = "<資料>\n{materials}\n</資料>\n\n質問: {question}"
 
 # モデルは実行時に渡す（テストではAPIを呼ばない TestModel に差し替えるため）
 agent = Agent(instructions=INSTRUCTIONS, output_type=[str, DeferredToolRequests])
+agent.tool_plain(tools.search_materials)
 agent.tool_plain(tools.search_glossary)
 agent.tool_plain(tools.get_lecture_summary)
 
@@ -164,6 +165,22 @@ def print_trace(result, elapsed_seconds: float | None = None) -> None:
                                 print(f"      {child['content']}")
                         if not data["children"]:
                             print(f"    （末端ページ・本文{len(node.get('content', ''))}文字を取得）")
+                elif part.tool_name == "search_materials":
+                    data = json.loads(part.content)
+                    if "error" in data:
+                        print(f"[tool return] {part.tool_name} -> {data['error']}")
+                    else:
+                        for search_result in data["results"]:
+                            context = search_result.get("context", [])
+                            neighbors = [
+                                f"p.{page['page']} {page['title']}"
+                                for page in context if page["page_id"] != search_result["page_id"]
+                            ]
+                            suffix = f" / 前後ページ: {', '.join(neighbors)}" if neighbors else ""
+                            print(
+                                f"[検索結果] 第{search_result['lecture']}回・PDF p.{search_result['page']} "
+                                f"{search_result['title']}{suffix}"
+                            )
                 else:
                     print(f"[tool return] {part.tool_name} -> {str(part.content)[:120]}…")
     usage = result.usage

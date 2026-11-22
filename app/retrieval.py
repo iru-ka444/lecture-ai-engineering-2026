@@ -84,6 +84,31 @@ def read_page(page_id: str) -> dict:
     raise ValueError("対象のページが見つかりません。")
 
 
+def with_page_context(rows: list[dict]) -> list[dict]:
+    """検索結果に同じ資料内の前後ページを context として付ける。"""
+    pages = load_pages(RAG_SOURCE)
+    by_document = defaultdict(list)
+    for page in pages:
+        by_document[page["document_id"]].append(page)
+
+    enhanced = []
+    for row in rows:
+        result = dict(row)
+        document_pages = by_document.get(result["document_id"], [])
+        positions = [
+            i for i, page in enumerate(document_pages)
+            if page["page_id"] == result["page_id"]
+        ]
+        if positions:
+            index = positions[0]
+            context = document_pages[max(0, index - 1):index + 2]
+            result["context"] = list({page["page_id"]: dict(page) for page in context}.values())
+        else:
+            result["context"] = [dict(result)]
+        enhanced.append(result)
+    return enhanced
+
+
 def normalized_vector(values: list[float]) -> list[float]:
     """ベクトルの長さを1に揃える。"""
     norm = math.hypot(*values)
@@ -135,7 +160,7 @@ def search(query: str) -> list[dict]:
                    vec_distance_cosine(embedding, ?) AS distance
             FROM chunks ORDER BY distance, page_id LIMIT ?
         """, (sqlite_vec.serialize_float32(vector), RAG_TOP_K))
-        return [dict(row) for row in rows]
+        return with_page_context([dict(row) for row in rows])
 
 
 def search_graph(query: str) -> dict:
@@ -181,7 +206,9 @@ def search_graph(query: str) -> dict:
                 if neighbor not in candidates or priority < candidates[neighbor][0]:
                     candidates[neighbor] = (priority, candidate)
     expanded = [candidate for _, candidate in sorted(candidates.values())]
-    return {"seeds": results, "expanded": expanded[:max(0, GRAPH_MAX_RESULTS - len(results))],
+    expanded = expanded[:max(0, GRAPH_MAX_RESULTS - len(results))]
+    return {"seeds": with_page_context(results),
+            "expanded": with_page_context(expanded),
             "max_hops": GRAPH_HOPS}
 
 
@@ -209,3 +236,8 @@ if __name__ == "__main__":
         print(f"タイトル: {result['title']}")
         print(f"ページ: {result['page']}")
         print(f"\n{result['content']}")
+        neighbor_pages = [page for page in result["context"] if page["page_id"] != result["page_id"]]
+        for page in neighbor_pages:
+            print(f"\n{'-' * 40}")
+            print(f"前後ページ: PDF p.{page['page']} / {page['title']}")
+            print(page["content"])

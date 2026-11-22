@@ -42,6 +42,38 @@ def test_built_index_can_be_searched(materials, monkeypatch):
     assert hits[0]["distance"] == pytest.approx(0)
 
 
+def test_search_result_contains_unique_adjacent_pages_in_same_document(tmp_path, monkeypatch):
+    source = tmp_path / "lectures.json"
+    source.write_text(json.dumps([
+        {"id": "lec01-main", "title": "講義1", "content": [
+            {"section": "章", "content": [
+                {"id": "lec01-main-p001", "title": "ページ1", "page": 1, "content": "本文1"},
+                {"id": "lec01-main-p002", "title": "ページ2", "page": 2, "content": "本文2"},
+                {"id": "lec01-main-p003", "title": "ページ3", "page": 3, "content": "本文3"}]}]},
+        {"id": "lec02-main", "title": "講義2", "content": [
+            {"section": "章", "content": [
+                {"id": "lec02-main-p001", "title": "別資料", "page": 1, "content": "別資料本文"}]}]}
+    ], ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(retrieval, "RAG_SOURCE", source)
+
+    middle = retrieval.with_page_context([{
+        "page_id": "lec01-main-p002", "document_id": "lec01-main",
+        "page": 2, "title": "ページ2", "content": "本文2",
+    }])[0]
+    assert [page["page_id"] for page in middle["context"]] == [
+        "lec01-main-p001", "lec01-main-p002", "lec01-main-p003",
+    ]
+    assert len(middle["context"]) == len({page["page_id"] for page in middle["context"]})
+
+    first = retrieval.with_page_context([{
+        "page_id": "lec01-main-p001", "document_id": "lec01-main",
+        "page": 1, "title": "ページ1", "content": "本文1",
+    }])[0]
+    assert [page["page_id"] for page in first["context"]] == [
+        "lec01-main-p001", "lec01-main-p002",
+    ]
+
+
 def test_existing_index_survives_failed_rebuild(materials):
     source, database = materials
     build_index(source, database, embedder=lambda *_: [1, 0])
